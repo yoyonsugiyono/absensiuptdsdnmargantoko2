@@ -857,6 +857,11 @@
             const [localSet, setLocalSet] = React.useState(currentSettings);
             const [currentGPS, setCurrentGPS] = React.useState(null); // New state for live preview
 
+            // Add effect to sync state when currentSettings prop updates
+            React.useEffect(() => {
+                setLocalSet(currentSettings);
+            }, [currentSettings]);
+
             // Add effect to get current GPS for preview
             React.useEffect(() => {
                 if ("geolocation" in navigator) {
