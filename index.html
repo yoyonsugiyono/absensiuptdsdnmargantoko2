@@ -95,12 +95,24 @@
             return R * c; 
         };
 
-        // Fungsi mendapatkan tanggal lokal YYYY-MM-DD (Penting untuk fix bug tanggal)
+        // Fungsi mendapatkan tanggal lokal YYYY-MM-DD
         const getLocalDateString = (dateObj = new Date()) => {
             const year = dateObj.getFullYear();
             const month = String(dateObj.getMonth() + 1).padStart(2, '0');
             const day = String(dateObj.getDate()).padStart(2, '0');
             return `${year}-${month}-${day}`;
+        };
+
+        // Fungsi normalisasi tanggal super robust untuk parsing data Sheet
+        const normalizeDate = (rawDate) => {
+            if (!rawDate) return null;
+            // Jika sudah format string pendek YYYY-MM-DD
+            if (typeof rawDate === 'string' && rawDate.length === 10 && rawDate.includes('-')) return rawDate;
+            
+            // Jika format Date Object atau ISO String
+            const d = new Date(rawDate);
+            if (isNaN(d.getTime())) return null;
+            return getLocalDateString(d);
         };
 
         const callSheetAPI = async (url, action, data = null) => {
@@ -526,6 +538,7 @@
             const [filterRole, setFilterRole] = React.useState('SEMUA'); // New Filter State
             const [data, setData] = React.useState([]);
             const [loading, setLoading] = React.useState(false);
+            const [totalRaw, setTotalRaw] = React.useState(0);
 
             const fetchData = async () => {
                 setLoading(true);
@@ -533,20 +546,39 @@
                     let res = [];
                     if (settings.sheetUrl) {
                         const allData = await callSheetAPI(settings.sheetUrl, 'getAttendance');
+                        setTotalRaw(allData.length);
+                        
+                        // LOGIKA BARU: Normalisasi Tanggal Lebih Pintar
                         res = allData.filter(d => {
-                            if (!d.dateString) return false;
-                            const dateOnly = String(d.dateString).substring(0, 10);
-                            return dateOnly >= startDate && dateOnly <= endDate;
+                            let itemDateStr = d.dateString;
+                            
+                            // Fallback: Jika dateString kosong, coba ambil dari timestamp
+                            if (!itemDateStr && d.timestamp) {
+                                itemDateStr = normalizeDate(d.timestamp);
+                            } else {
+                                itemDateStr = normalizeDate(itemDateStr);
+                            }
+
+                            if (!itemDateStr) return false; // Data sampah dilewati
+                            
+                            // Simpan kembali format yang bersih untuk ditampilkan
+                            d.dateString = itemDateStr; 
+                            
+                            return itemDateStr >= startDate && itemDateStr <= endDate;
                         });
                     } else {
                         const ref = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('attendance');
                         const snapshot = await ref.where('dateString', '>=', startDate).where('dateString', '<=', endDate).get();
                         res = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                        setTotalRaw(res.length);
                     }
                     
-                    // Filter berdasarkan Role
+                    // Filter berdasarkan Role (Case insensitive & trim spaces)
                     if (filterRole !== 'SEMUA') {
-                        res = res.filter(item => item.userRole === filterRole);
+                        res = res.filter(item => {
+                            const r = (item.userRole || '').toUpperCase().trim();
+                            return r === filterRole;
+                        });
                     }
 
                     // Sort newest first
@@ -565,7 +597,7 @@
 
             const exportExcel = () => {
                 const worksheet = XLSX.utils.json_to_sheet(data.map(item => ({
-                    Nama: item.userName, Role: item.userRole, Tipe: item.type, Tanggal: String(item.dateString).substring(0,10),
+                    Nama: item.userName, Role: item.userRole, Tipe: item.type, Tanggal: item.dateString,
                     Waktu: item.timestamp ? (typeof item.timestamp === 'string' ? item.timestamp.split('T')[1].substring(0,5) : new Date(item.timestamp.seconds*1000).toLocaleTimeString('id-ID')) : '-',
                     Lokasi: item.locationStatus, Jarak: item.distance + ' m'
                 })));
@@ -608,6 +640,7 @@
                                 <i className="fas fa-file-excel mr-2"></i> Export Excel
                             </button>
                         </div>
+                        <p className="text-xs text-gray-400 text-right">Menampilkan {data.length} dari {totalRaw} data mentah.</p>
                     </div>
 
                     <div className="overflow-x-auto bg-white border rounded-lg shadow-sm">
@@ -623,11 +656,11 @@
                             </thead>
                             <tbody className="bg-white divide-y divide-gray-200 text-sm">
                                 {loading ? <tr><td colSpan="5" className="text-center py-8 text-gray-500">Memuat data...</td></tr> : 
-                                 data.length === 0 ? <tr><td colSpan="5" className="text-center py-8 text-gray-400">Tidak ada data ditemukan.</td></tr> :
+                                 data.length === 0 ? <tr><td colSpan="5" className="text-center py-8 text-gray-400">Tidak ada data ditemukan pada rentang tanggal ini.</td></tr> :
                                  data.map((item, i) => (
                                     <tr key={i} className="hover:bg-blue-50 transition-colors">
                                         <td className="px-6 py-4 whitespace-nowrap text-gray-600 font-mono text-xs">
-                                            {String(item.dateString).substring(0,10)} <br/>
+                                            {item.dateString} <br/>
                                             <span className="font-bold text-gray-800">
                                                 {item.timestamp ? (typeof item.timestamp === 'string' ? item.timestamp.split('T')[1].substring(0,5) : new Date(item.timestamp.seconds*1000).toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'})) : '-'}
                                             </span>
