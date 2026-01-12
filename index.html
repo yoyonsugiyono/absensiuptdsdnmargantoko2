@@ -602,7 +602,15 @@
                     let res = [];
                     if (settings.sheetUrl) {
                         const allData = await callSheetAPI(settings.sheetUrl, 'getAttendance');
-                        res = allData.filter(d => d.dateString >= startDate && d.dateString <= endDate);
+                        console.log("Raw Sheet Data:", allData); // Debugging
+                        
+                        // Perbaikan: Normalisasi tanggal dari Sheet yang mungkin berupa ISO String panjang
+                        res = allData.filter(d => {
+                            if (!d.dateString) return false;
+                            // Ambil 10 karakter pertama (YYYY-MM-DD)
+                            const dateOnly = String(d.dateString).substring(0, 10);
+                            return dateOnly >= startDate && dateOnly <= endDate;
+                        });
                     } else {
                         const ref = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('attendance');
                         const snapshot = await ref
@@ -620,7 +628,10 @@
                     });
                     
                     setData(res);
-                } catch (err) { alert("Gagal mengambil data: " + err.message); }
+                } catch (err) { 
+                    console.error(err);
+                    alert("Gagal mengambil data: " + err.message); 
+                }
                 setLoading(false);
             };
 
@@ -631,7 +642,7 @@
                     Nama: item.userName,
                     Role: item.userRole,
                     Tipe: item.type,
-                    Tanggal: item.dateString,
+                    Tanggal: String(item.dateString).substring(0,10),
                     Waktu: item.timestamp ? (typeof item.timestamp === 'string' ? item.timestamp.split('T')[1].substring(0,5) : new Date(item.timestamp.seconds*1000).toLocaleTimeString('id-ID')) : '-',
                     Lokasi: item.locationStatus,
                     Jarak: item.distance + ' m'
@@ -688,7 +699,7 @@
                                                 {item.type}
                                             </span>
                                         </td>
-                                        <td className="px-6 py-4 text-gray-500">{item.dateString}</td>
+                                        <td className="px-6 py-4 text-gray-500">{String(item.dateString).substring(0,10)}</td>
                                         <td className="px-6 py-4 text-gray-500">{item.locationStatus}</td>
                                     </tr>
                                 ))}
