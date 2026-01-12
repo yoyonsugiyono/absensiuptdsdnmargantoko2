@@ -115,6 +115,28 @@
             return getLocalDateString(d);
         };
 
+        // Helper untuk format jam yang benar (FIX BUG WAKTU)
+        const formatTimeDisplay = (ts) => {
+            if (!ts) return '-';
+            let dateObj;
+            
+            // Cek apakah format Firestore (seconds) atau String ISO dari Sheet
+            if (ts && ts.seconds) {
+                dateObj = new Date(ts.seconds * 1000);
+            } else {
+                dateObj = new Date(ts);
+            }
+
+            if (isNaN(dateObj.getTime())) return '-';
+            
+            // Konversi ke lokal (WIB)
+            return dateObj.toLocaleTimeString('id-ID', {
+                hour: '2-digit', 
+                minute: '2-digit', 
+                hour12: false
+            }).replace('.', ':');
+        };
+
         const callSheetAPI = async (url, action, data = null) => {
             if (!url) throw new Error("URL Spreadsheet belum disetting!");
             const payload = JSON.stringify({ action, ...data });
@@ -598,7 +620,7 @@
             const exportExcel = () => {
                 const worksheet = XLSX.utils.json_to_sheet(data.map(item => ({
                     Nama: item.userName, Role: item.userRole, Tipe: item.type, Tanggal: item.dateString,
-                    Waktu: item.timestamp ? (typeof item.timestamp === 'string' ? item.timestamp.split('T')[1].substring(0,5) : new Date(item.timestamp.seconds*1000).toLocaleTimeString('id-ID')) : '-',
+                    Waktu: formatTimeDisplay(item.timestamp),
                     Lokasi: item.locationStatus, Jarak: item.distance + ' m'
                 })));
                 const workbook = XLSX.utils.book_new();
@@ -662,7 +684,7 @@
                                         <td className="px-6 py-4 whitespace-nowrap text-gray-600 font-mono text-xs">
                                             {item.dateString} <br/>
                                             <span className="font-bold text-gray-800">
-                                                {item.timestamp ? (typeof item.timestamp === 'string' ? item.timestamp.split('T')[1].substring(0,5) : new Date(item.timestamp.seconds*1000).toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'})) : '-'}
+                                                {formatTimeDisplay(item.timestamp)}
                                             </span>
                                         </td>
                                         <td className="px-6 py-4 font-medium text-gray-900">{item.userName}</td>
