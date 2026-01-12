@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Absensi UPTD SDN Margantoko 2</title>
+    
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Firebase -->
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+
+    <!-- Excel Export (SheetJS) -->
+    <script lang="javascript" src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+    
+    <!-- PDF Export (jsPDF) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
+
+    <!-- QR Code Scanner (HTML5-QRCode) -->
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+
+    <!-- QR Code Generator (QRious) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
+
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; }
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        #reader { width: 100%; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // --- KONFIGURASI FIREBASE ---
+        // PENTING UNTUK GITHUB:
+        // Jika window.__firebase_config tidak ada (karena di GitHub), gunakan object manual di bawah.
+        // Silakan ganti nilai 'PASTE_...' dengan data dari Firebase Console Anda.
+        const firebaseConfig = (typeof window !== 'undefined' && window.__firebase_config) ? JSON.parse(window.__firebase_config) : {
+            apiKey: "PASTE_API_KEY_DISINI",
+            authDomain: "PASTE_PROJECT_ID.firebaseapp.com",
+            projectId: "PASTE_PROJECT_ID",
+            storageBucket: "PASTE_PROJECT_ID.appspot.com",
+            messagingSenderId: "PASTE_SENDER_ID",
+            appId: "PASTE_APP_ID"
+        };
+
+        const appId = (typeof window !== 'undefined' && window.__app_id) ? window.__app_id : 'margantoko-2-prod';
+
+        if (!firebase.apps.length) {
+            try {
+                firebase.initializeApp(firebaseConfig);
+            } catch (e) {
+                console.error("Firebase init error. Pastikan config sudah diisi!", e);
+                document.body.innerHTML = '<div style="padding:20px; text-align:center; color:red;"><h1>Error Konfigurasi</h1><p>Gagal menginisialisasi Firebase. Pastikan Anda telah mengedit file index.html dan memasukkan API Key Firebase Anda.</p></div>';
+            }
+        }
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+
+        // --- UTILS (Fungsi Bantuan) ---
+        const calculateDistance = (lat1, lon1, lat2, lon2) => {
+            if (!lat1 || !lon1 || !lat2 || !lon2) return 9999999;
+            const R = 6371e3; 
+            const φ1 = lat1 * Math.PI/180;
+            const φ2 = lat2 * Math.PI/180;
+            const Δφ = (lat2-lat1) * Math.PI/180;
+            const Δλ = (lon2-lon1) * Math.PI/180;
+            const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ/2) * Math.sin(Δλ/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c; 
+        };
+
+        // --- GOOGLE SHEET API HELPER ---
+        const callSheetAPI = async (url, action, data = null) => {
+            if (!url) throw new Error("URL Spreadsheet belum disetting!");
+            
+            const payload = JSON.stringify({ action, ...data });
+            
+            const response = await fetch(url, {
+                method: 'POST',
+                mode: 'cors', 
+                headers: {
+                    'Content-Type': 'text/plain;charset=utf-8', 
+                },
+                body: payload
+            });
+
+            if (!response.ok) throw new Error("Gagal menghubungi Spreadsheet");
+            return await response.json();
+        };
+
+        // --- KOMPONEN UTAMA ---
+
+        function App() {
+            const [user, setUser] = React.useState(null);
+            const [view, setView] = React.useState('loading'); 
+            const [settings, setSettings] = React.useState({
+                schoolLat: -6.175392, 
+                schoolLng: 106.827153,
+                radius: 100, 
+                schoolName: 'UPTD SDN Margantoko 2',
+                // URL Spreadsheet Langsung di-hardcode disini
+                sheetUrl: 'https://script.google.com/macros/s/AKfycbzbIBb_wBJxdfnwCurBJ-ndc-50jdTfCUJw3cn-0iY2GT3UfuHRKEdfg4VKgbXH3hEVOw/exec' 
+            });
+            const [notification, setNotification] = React.useState(null);
+
+            React.useEffect(() => {
+                const initAuth = async () => {
+                    try {
+                        // Di GitHub, __initial_auth_token tidak akan ada, jadi akan langsung ke else (signInAnonymously)
+                        if (typeof window !== 'undefined' && window.__initial_auth_token) {
+                            await auth.signInWithCustomToken(window.__initial_auth_token);
+                        } else {
+                            await auth.signInAnonymously();
+                        }
+                    } catch (error) { 
+                        console.error("Auth Error:", error);
+                        // showNotify("Gagal Login Firebase. Cek Console.", "error"); // Cannot use showNotify here yet
+                    }
+                };
+                initAuth();
+
+                const unsubscribeAuth = auth.onAuthStateChanged((u) => {
+                    setUser(u);
+                    if (u) {
+                        const settingsRef = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('settings').doc('school_config');
+                        settingsRef.onSnapshot(doc => {
+                            if (doc.exists) {
+                                const data = doc.data();
+                                // Prioritaskan URL hardcode jika di database kosong, tapi gunakan DB jika ada isinya (untuk fleksibilitas)
+                                // Jika user ingin memaksa hardcode, kita bisa abaikan data.sheetUrl
+                                if (!data.sheetUrl) {
+                                    data.sheetUrl = settings.sheetUrl;
+                                }
+                                setSettings(prev => ({...prev, ...data}));
+                            }
+                            else settingsRef.set(settings);
+                            setView('kiosk');
+                        }, (err) => {
+                            console.error("Gagal load settings:", err);
+                            // Tetap masuk ke Kiosk meski gagal load setting (offline mode mungkin)
+                            setView('kiosk');
+                        });
+                    }
+                });
+                return () => unsubscribeAuth();
+            }, []);
+
+            const showNotify = (msg, type = 'info') => {
+                setNotification({ msg, type });
+                setTimeout(() => setNotification(null), 3000);
+            };
+
+            if (view === 'loading') return <div className="min-h-screen flex items-center justify-center bg-blue-50"><div className="loader"></div></div>;
+
+            return (
+                <div className="min-h-screen relative overflow-hidden bg-slate-100 text-slate-800">
+                    <header className="bg-blue-600 text-white shadow-lg p-4 sticky top-0 z-20">
+                        <div className="max-w-6xl mx-auto flex justify-between items-center">
+                            <div className="flex items-center space-x-3">
+                                <div className="bg-white p-2 rounded-full text-blue-600">
+                                    <i className="fas fa-qrcode text-xl"></i>
+                                </div>
+                                <div>
+                                    <h1 className="font-bold text-lg leading-tight">{settings.schoolName}</h1>
+                                    <p className="text-xs text-blue-100 opacity-90">
+                                        {settings.sheetUrl ? <span className="bg-green-500 px-1 rounded">Online (Sheet)</span> : "Mode Offline (Local)"}
+                                    </p>
+                                </div>
+                            </div>
+                            <div>
+                                {view === 'kiosk' ? (
+                                    <button onClick={() => setView('adminLogin')} className="text-sm bg-blue-700 hover:bg-blue-800 px-3 py-1 rounded transition">
+                                        <i className="fas fa-cog mr-1"></i> Admin
+                                    </button>
+                                ) : (
+                                    <button onClick={() => setView('kiosk')} className="text-sm bg-blue-700 hover:bg-blue-800 px-3 py-1 rounded transition">
+                                        <i className="fas fa-arrow-left mr-1"></i> Kiosk
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    </header>
+
+                    <main className="max-w-6xl mx-auto p-4">
+                        {view === 'kiosk' && <KioskView db={db} appId={appId} settings={settings} showNotify={showNotify} />}
+                        {view === 'adminLogin' && <AdminLogin onLogin={() => setView('adminDashboard')} />}
+                        {view === 'adminDashboard' && <AdminDashboard db={db} appId={appId} settings={settings} showNotify={showNotify} />}
+                    </main>
+
+                    {notification && (
+                        <div className={`fixed bottom-4 right-4 z-50 px-6 py-4 rounded-lg shadow-xl text-white transform transition-all duration-300 ${
+                            notification.type === 'error' ? 'bg-red-500' : notification.type === 'success' ? 'bg-green-500' : 'bg-blue-500'
+                        }`}>
+                            <div className="flex items-center space-x-2">
+                                <i className={`fas ${notification.type === 'error' ? 'fa-exclamation-circle' : 'fa-check-circle'}`}></i>
+                                <span className="font-medium">{notification.msg}</span>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        function AdminLogin({ onLogin }) {
+            const [pass, setPass] = React.useState('');
+            const [error, setError] = React.useState('');
+            const handleLogin = (e) => {
+                e.preventDefault();
+                if (pass === 'admin123') onLogin();
+                else setError('Password salah!');
+            };
+            return (
+                <div className="max-w-md mx-auto mt-10 bg-white p-8 rounded-xl shadow-lg border border-gray-100">
+                    <div className="text-center mb-6">
+                        <i className="fas fa-user-shield text-4xl text-blue-600 mb-2"></i>
+                        <h2 className="text-2xl font-bold text-gray-800">Login Admin</h2>
+                    </div>
+                    <form onSubmit={handleLogin} className="space-y-4">
+                        <input type="password" className="w-full p-3 border rounded-lg" placeholder="Masukkan password..." value={pass} onChange={(e) => setPass(e.target.value)} />
+                        {error && <p className="text-red-500 text-sm">{error}</p>}
+                        <button type="submit" className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold">Masuk</button>
+                    </form>
+                    <p className="mt-4 text-xs text-center text-gray-400">Default: admin123</p>
+                </div>
+            );
+        }
+
+        function KioskView({ db, appId, settings, showNotify }) {
+            const [barcode, setBarcode] = React.useState('');
+            const [status, setStatus] = React.useState('MASUK');
+            const [loading, setLoading] = React.useState(false);
+            const [currentLoc, setCurrentLoc] = React.useState(null);
+            const [distance, setDistance] = React.useState(null);
+            const [locError, setLocError] = React.useState('Menunggu GPS...');
+            const [showCamera, setShowCamera] = React.useState(false);
+            const inputRef = React.useRef(null);
+            const html5QrcodeScannerRef = React.useRef(null);
+            const [offlineUsers, setOfflineUsers] = React.useState([]);
+
+            // Load Users
+            React.useEffect(() => {
+                const loadUsers = async () => {
+                    if (settings.sheetUrl) {
+                        try {
+                            const res = await callSheetAPI(settings.sheetUrl, 'getUsers');
+                            setOfflineUsers(res);
+                        } catch(e) { console.error("Sheet load error", e); }
+                    } else {
+                        const snap = await db.collection('artifacts').doc(appId).collection('public').doc('data').collection('users').get();
+                        setOfflineUsers(snap.docs.map(d => ({id: d.id, ...d.data()})));
+                    }
+                };
+                loadUsers();
+            }, [settings.sheetUrl]);
+
+            React.useEffect(() => {
+                const watchId = navigator.geolocation.watchPosition(
+                    (pos) => {
+                        const { latitude, longitude } = pos.coords;
+                        setCurrentLoc({ lat: latitude, lng: longitude });
+                        const dist = calculateDistance(latitude, longitude, settings.schoolLat, settings.schoolLng);
+                        setDistance(dist);
+                        setLocError('');
+                    },
+                    (err) => {
+                        let msg = 'GPS Error';
+                        if (err.code === 1) msg = 'Izin Lokasi Ditolak (Cek Browser)';
+                        else if (err.code === 2) msg = 'Posisi Tidak Tersedia (Sinyal Lemah)';
+                        else if (err.code === 3) msg = 'GPS Timeout (Kelamaan)';
+                        setLocError(msg);
+                    }, 
+                    { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
+                );
+                
+                if(inputRef.current) inputRef.current.focus();
+                
+                return () => navigator.geolocation.clearWatch(watchId);
+            }, [settings]);
+
+            React.useEffect(() => {
+                if (showCamera) {
+                    const onScanSuccess = (decodedText) => {
+                        setBarcode(decodedText);
+                        setShowCamera(false);
+                        processAbsen(decodedText);
+                    };
+                    const scanner = new Html5QrcodeScanner("reader", { fps: 10, qrbox: { width: 250, height: 250 } }, false);
+                    scanner.render(onScanSuccess, () => {});
+                    html5QrcodeScannerRef.current = scanner;
+                } else {
+                    if (html5QrcodeScannerRef.current) {
+                        html5QrcodeScannerRef.current.clear().catch(e=>console.error(e));
+                        html5QrcodeScannerRef.current = null;
+                    }
+                    if(inputRef.current) inputRef.current.focus();
+                }
+                return () => { if(html5QrcodeScannerRef.current) html5QrcodeScannerRef.current.clear().catch(e=>{}); }
+            }, [showCamera]);
+
+            const processAbsen = async (codeId) => {
+                if (!codeId || !codeId.trim()) return;
+                setLoading(true);
+                try {
+                    const user = offlineUsers.find(u => u.barcodeId == codeId.trim());
+
+                    if (!user) {
+                        showNotify('QR Code tidak ditemukan di database!', 'error');
+                        setBarcode('');
+                        setLoading(false);
+                        return;
+                    }
+
+                    // --- VALIDASI ROLE KHUSUS ---
+                    if (status === 'DINAS' && !['GURU', 'TENDIK'].includes(user.role)) {
+                        showNotify('Status DINAS LUAR hanya untuk GURU dan TENDIK!', 'error');
+                        setBarcode('');
+                        setLoading(false);
+                        return;
+                    }
+
+                    const isSpecialStatus = ['IJIN', 'SAKIT', 'DINAS'].includes(status);
+                    if (!isSpecialStatus) {
+                        if (!currentLoc) { showNotify(`Gagal: ${locError || 'Menunggu sinyal GPS...'}`, 'error'); setLoading(false); return; }
+                        if (distance > settings.radius) { showNotify(`Gagal! Jarak ${Math.round(distance)}m. Max ${settings.radius}m.`, 'error'); setBarcode(''); setLoading(false); return; }
+                    }
+
+                    const dataPayload = {
+                        userName: user.name,
+                        userRole: user.role,
+                        userBarcode: user.barcodeId,
+                        type: status,
+                        dateString: new Date().toISOString().split('T')[0],
+                        latitude: currentLoc ? currentLoc.lat : 0,
+                        longitude: currentLoc ? currentLoc.lng : 0,
+                        locationStatus: isSpecialStatus ? 'Manual' : 'On-Site',
+                        distance: isSpecialStatus ? 0 : Math.round(distance),
+                        timestamp: new Date().toISOString()
+                    };
+
+                    if (settings.sheetUrl) {
+                        await callSheetAPI(settings.sheetUrl, 'addAttendance', dataPayload);
+                    } else {
+                        await db.collection('artifacts').doc(appId).collection('public').doc('data').collection('attendance').add({
+                            ...dataPayload,
+                            timestamp: firebase.firestore.FieldValue.serverTimestamp()
+                        });
+                    }
+
+                    showNotify(`Berhasil! ${user.name} - Absen ${status}`, 'success');
+                    setBarcode('');
+                } catch (err) {
+                    console.error(err);
+                    showNotify('Gagal menyimpan: ' + err.message, 'error');
+                } finally {
+                    setLoading(false);
+                    if(!showCamera && inputRef.current) inputRef.current.focus();
+                }
+            }
+
+            const statusColors = { 
+                'MASUK': 'bg-green-600', 
+                'KELUAR': 'bg-red-600', 
+                'IJIN': 'bg-yellow-500', 
+                'SAKIT': 'bg-orange-500', 
+                'DINAS': 'bg-blue-500' 
+            };
+
+            return (
+                <div className="flex flex-col items-center justify-center space-y-6 mt-4">
+                    <div className="w-full max-w-lg bg-white rounded-xl shadow-md p-6 border-l-4 border-blue-500">
+                        <div className="flex justify-between items-start">
+                            <div>
+                                <h3 className="text-gray-500 text-sm font-semibold uppercase tracking-wide">Status Lokasi</h3>
+                                <div className="mt-1 flex items-center space-x-2">
+                                    {locError ? <span className="text-red-500 font-bold"><i className="fas fa-times-circle"></i> {locError}</span> : (
+                                        <><span className={`px-2 py-1 rounded text-xs font-bold ${distance <= settings.radius ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{distance ? `${Math.round(distance)} m` : '...'}</span></>
+                                    )}
+                                </div>
+                            </div>
+                            <div className="text-right">
+                                <p className="text-2xl font-bold text-gray-800">{new Date().toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'})}</p>
+                                <p className="text-xs text-gray-500">{new Date().toLocaleDateString('id-ID', {weekday:'long', day:'numeric', month:'long'})}</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="w-full max-w-lg bg-white rounded-2xl shadow-xl overflow-hidden">
+                        <div className="grid grid-cols-5 bg-gray-100 p-1 gap-1">
+                            {Object.keys(statusColors).map(s => (
+                                <button key={s} onClick={() => setStatus(s)} className={`py-3 text-xs md:text-sm font-bold rounded-lg transition-all ${status === s ? `${statusColors[s]} text-white shadow-md transform scale-105` : 'text-gray-500 hover:bg-gray-200'}`}>{s}</button>
+                            ))}
+                        </div>
+                        <div className="p-8">
+                            <div className="text-center mb-6">
+                                <h2 className="text-2xl font-bold text-gray-800">Absensi QR</h2>
+                                <p className="text-gray-500 text-xs">Database: {settings.sheetUrl ? "Google Sheet" : "Lokal"}</p>
+                                <p className="text-xs text-orange-500 mt-2 font-semibold">"Dinas" hanya untuk Guru & Tendik</p>
+                            </div>
+                            <div className="mb-4">
+                                {showCamera ? (
+                                    <div className="relative"><div id="reader" className="w-full border rounded-lg overflow-hidden"></div><button onClick={() => setShowCamera(false)} className="mt-2 w-full py-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 font-semibold">Tutup Kamera</button></div>
+                                ) : (
+                                    <button onClick={() => setShowCamera(true)} className="w-full py-3 bg-blue-50 text-blue-600 rounded-xl border border-blue-200 hover:bg-blue-100 font-bold flex items-center justify-center gap-2 transition"><i className="fas fa-camera"></i> Buka Kamera Scan</button>
+                                )}
+                            </div>
+                            {!showCamera && (
+                                <form onSubmit={(e) => { e.preventDefault(); processAbsen(barcode); }} className="relative">
+                                    <input ref={inputRef} type="text" value={barcode} onChange={(e) => setBarcode(e.target.value)} className="w-full pl-12 pr-4 py-4 text-xl border-2 border-gray-200 rounded-xl focus:border-blue-500 focus:ring-4 focus:ring-blue-100 transition outline-none font-mono tracking-widest text-center" placeholder="Kode QR..." autoFocus disabled={loading} />
+                                    <i className="fas fa-keyboard absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400 text-xl"></i>
+                                    <button type="submit" disabled={loading} className={`mt-4 w-full py-3 rounded-xl font-bold text-white shadow-lg transition transform active:scale-95 ${loading ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'}`}>{loading ? 'Memproses...' : 'KIRIM ABSENSI'}</button>
+                                </form>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function AdminDashboard({ db, appId, settings, showNotify }) {
+            const [tab, setTab] = React.useState('rekap'); 
+            return (
+                <div className="bg-white rounded-xl shadow-lg min-h-[80vh] flex flex-col md:flex-row overflow-hidden">
+                    <div className="w-full md:w-64 bg-slate-800 text-white flex flex-col">
+                        <div className="p-6 border-b border-slate-700"><h2 className="text-xl font-bold">Admin Panel</h2></div>
+                        <nav className="flex-1 p-4 space-y-2">
+                            <button onClick={() => setTab('rekap')} className={`w-full text-left px-4 py-3 rounded-lg flex items-center space-x-3 transition ${tab === 'rekap' ? 'bg-blue-600' : 'hover:bg-slate-700'}`}><i className="fas fa-chart-bar w-5"></i> <span>Laporan</span></button>
+                            <button onClick={() => setTab('users')} className={`w-full text-left px-4 py-3 rounded-lg flex items-center space-x-3 transition ${tab === 'users' ? 'bg-blue-600' : 'hover:bg-slate-700'}`}><i className="fas fa-users w-5"></i> <span>Data User</span></button>
+                            <button onClick={() => setTab('cuti')} className={`w-full text-left px-4 py-3 rounded-lg flex items-center space-x-3 transition ${tab === 'cuti' ? 'bg-blue-600' : 'hover:bg-slate-700'}`}><i className="fas fa-calendar-minus w-5"></i> <span>Kelola Cuti</span></button>
+                            <button onClick={() => setTab('settings')} className={`w-full text-left px-4 py-3 rounded-lg flex items-center space-x-3 transition ${tab === 'settings' ? 'bg-blue-600' : 'hover:bg-slate-700'}`}><i className="fas fa-cogs w-5"></i> <span>Pengaturan</span></button>
+                        </nav>
+                    </div>
+                    <div className="flex-1 p-6 md:p-8 overflow-y-auto">
+                        {tab === 'rekap' && <ReportTab db={db} appId={appId} settings={settings} />}
+                        {tab === 'users' && <UsersTab db={db} appId={appId} settings={settings} showNotify={showNotify} />}
+                        {tab === 'cuti' && <LeaveTab db={db} appId={appId} settings={settings} showNotify={showNotify} />}
+                        {tab === 'settings' && <SettingsTab db={db} appId={appId} currentSettings={settings} showNotify={showNotify} />}
+                    </div>
+                </div>
+            );
+        }
+
+        // --- NEW COMPONENT: LEAVE TAB ---
+        function LeaveTab({ db, appId, settings, showNotify }) {
+            const [users, setUsers] = React.useState([]);
+            const [selectedUser, setSelectedUser] = React.useState('');
+            const [startDate, setStartDate] = React.useState('');
+            const [endDate, setEndDate] = React.useState('');
+            const [reason, setReason] = React.useState('Cuti Tahunan');
+            const [loading, setLoading] = React.useState(false);
+
+            React.useEffect(() => {
+                const fetchUsers = async () => {
+                    if (settings.sheetUrl) {
+                        try {
+                            const res = await callSheetAPI(settings.sheetUrl, 'getUsers');
+                            // Filter only Guru & Tendik
+                            setUsers(res.filter(u => ['GURU', 'TENDIK'].includes(u.role)));
+                        } catch(e) { console.error(e); }
+                    } else {
+                        const snap = await db.collection('artifacts').doc(appId).collection('public').doc('data').collection('users').get();
+                        const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                        setUsers(all.filter(u => ['GURU', 'TENDIK'].includes(u.role)));
+                    }
+                };
+                fetchUsers();
+            }, [settings.sheetUrl]);
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                if (!selectedUser || !startDate || !endDate) {
+                    showNotify('Pilih User dan Rentang Tanggal', 'error');
+                    return;
+                }
+                
+                setLoading(true);
+                const user = users.find(u => u.barcodeId === selectedUser);
+                const start = new Date(startDate);
+                const end = new Date(endDate);
+                
+                // Array of promises/operations
+                const operations = [];
+
+                for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+                    const dateStr = d.toISOString().split('T')[0];
+                    const dataPayload = {
+                        userName: user.name,
+                        userRole: user.role,
+                        userBarcode: user.barcodeId,
+                        type: 'CUTI',
+                        dateString: dateStr,
+                        latitude: 0,
+                        longitude: 0,
+                        locationStatus: `Admin Plot (${reason})`,
+                        distance: 0,
+                        timestamp: d.toISOString() // Use the plotted date as timestamp
+                    };
+
+                    if (settings.sheetUrl) {
+                        operations.push(callSheetAPI(settings.sheetUrl, 'addAttendance', dataPayload));
+                    } else {
+                        operations.push(db.collection('artifacts').doc(appId).collection('public').doc('data').collection('attendance').add({
+                            ...dataPayload,
+                            timestamp: firebase.firestore.Timestamp.fromDate(d)
+                        }));
+                    }
+                }
+
+                try {
+                    await Promise.all(operations);
+                    showNotify(`Berhasil plot cuti untuk ${user.name}`, 'success');
+                    setStartDate('');
+                    setEndDate('');
+                } catch (err) {
+                    showNotify('Terjadi kesalahan saat menyimpan cuti', 'error');
+                }
+                setLoading(false);
+            };
+
+            return (
+                <div className="max-w-xl bg-white p-6 rounded-lg border">
+                    <h3 className="text-xl font-bold mb-4">Kelola Cuti (Guru & Tendik)</h3>
+                    <p className="text-sm text-gray-500 mb-6">Sistem ini akan otomatis mengisi absensi dengan status "CUTI" pada rentang tanggal yang dipilih.</p>
+                    
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <label className="block text-sm font-medium mb-1">Pilih Pegawai</label>
+                            <select 
+                                className="w-full border p-2 rounded" 
+                                value={selectedUser} 
+                                onChange={e => setSelectedUser(e.target.value)}
+                            >
+                                <option value="">-- Pilih Nama --</option>
+                                {users.map(u => (
+                                    <option key={u.barcodeId} value={u.barcodeId}>{u.name} ({u.role})</option>
+                                ))}
+                            </select>
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-4">
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Dari Tanggal</label>
+                                <input type="date" className="w-full border p-2 rounded" value={startDate} onChange={e => setStartDate(e.target.value)} />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium mb-1">Sampai Tanggal</label>
+                                <input type="date" className="w-full border p-2 rounded" value={endDate} onChange={e => setEndDate(e.target.value)} />
+                            </div>
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium mb-1">Keterangan Cuti</label>
+                            <input type="text" className="w-full border p-2 rounded" value={reason} onChange={e => setReason(e.target.value)} placeholder="Contoh: Cuti Tahunan, Menikah, dll" />
+                        </div>
+
+                        <button disabled={loading} className="w-full bg-purple-600 text-white py-2 rounded font-bold hover:bg-purple-700 transition">
+                            {loading ? 'Sedang Memproses...' : 'Simpan Data Cuti'}
+                        </button>
+                    </form>
+                </div>
+            );
+        }
+
+        function ReportTab({ db, appId, settings }) {
+            const [startDate, setStartDate] = React.useState(new Date().toISOString().split('T')[0]);
+            const [endDate, setEndDate] = React.useState(new Date().toISOString().split('T')[0]);
+            const [data, setData] = React.useState([]);
+            const [loading, setLoading] = React.useState(false);
+
+            const fetchData = async () => {
+                setLoading(true);
+                try {
+                    let res = [];
+                    if (settings.sheetUrl) {
+                        const allData = await callSheetAPI(settings.sheetUrl, 'getAttendance');
+                        res = allData.filter(d => d.dateString >= startDate && d.dateString <= endDate);
+                    } else {
+                        const ref = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('attendance');
+                        const snapshot = await ref
+                            .where('dateString', '>=', startDate)
+                            .where('dateString', '<=', endDate)
+                            .get();
+                        res = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    }
+                    
+                    // Client side sort (Newest First)
+                    res.sort((a, b) => {
+                        const tA = a.timestamp?.seconds || (new Date(a.timestamp).getTime()/1000) || 0;
+                        const tB = b.timestamp?.seconds || (new Date(b.timestamp).getTime()/1000) || 0;
+                        return tB - tA;
+                    });
+                    
+                    setData(res);
+                } catch (err) { alert("Gagal mengambil data: " + err.message); }
+                setLoading(false);
+            };
+
+            React.useEffect(() => { fetchData(); }, [startDate, endDate, settings.sheetUrl]);
+
+            const exportExcel = () => {
+                const worksheet = XLSX.utils.json_to_sheet(data.map(item => ({
+                    Nama: item.userName,
+                    Role: item.userRole,
+                    Tipe: item.type,
+                    Tanggal: item.dateString,
+                    Waktu: item.timestamp ? (typeof item.timestamp === 'string' ? item.timestamp.split('T')[1].substring(0,5) : new Date(item.timestamp.seconds*1000).toLocaleTimeString('id-ID')) : '-',
+                    Lokasi: item.locationStatus,
+                    Jarak: item.distance + ' m'
+                })));
+                const workbook = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(workbook, worksheet, "Absensi");
+                XLSX.writeFile(workbook, `Absensi_${startDate}_sd_${endDate}.xlsx`);
+            };
+
+            return (
+                <div>
+                    <div className="flex flex-col md:flex-row justify-between items-center mb-6">
+                        <h3 className="text-2xl font-bold mb-4 md:mb-0">Rekap Absensi</h3>
+                        <div className="flex flex-wrap gap-2 items-center">
+                            <div className="flex items-center gap-1">
+                                <span className="text-xs text-gray-500">Dari:</span>
+                                <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="border rounded px-2 py-1 text-sm" />
+                            </div>
+                            <div className="flex items-center gap-1">
+                                <span className="text-xs text-gray-500">Sampai:</span>
+                                <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="border rounded px-2 py-1 text-sm" />
+                            </div>
+                            <button onClick={exportExcel} className="bg-green-600 text-white px-4 py-1.5 rounded text-sm hover:bg-green-700 transition">
+                                <i className="fas fa-file-excel mr-1"></i> Excel
+                            </button>
+                        </div>
+                    </div>
+                    <div className="overflow-x-auto bg-white border rounded-lg max-h-[600px]">
+                        <table className="min-w-full divide-y divide-gray-200">
+                            <thead className="bg-gray-50 sticky top-0">
+                                <tr>
+                                    <th className="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase">Waktu</th>
+                                    <th className="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase">Nama</th>
+                                    <th className="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase">Status</th>
+                                    <th className="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase">Tanggal</th>
+                                    <th className="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase">Ket</th>
+                                </tr>
+                            </thead>
+                            <tbody className="bg-white divide-y divide-gray-200 text-sm">
+                                {loading ? <tr><td colSpan="5" className="text-center py-4">Loading...</td></tr> : 
+                                 data.length === 0 ? <tr><td colSpan="5" className="text-center py-4 text-gray-400">Tidak ada data di rentang tanggal ini.</td></tr> :
+                                 data.map((item, i) => (
+                                    <tr key={i} className="hover:bg-gray-50">
+                                        <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                                            {item.timestamp ? (typeof item.timestamp === 'string' ? item.timestamp.split('T')[1].substring(0,5) : new Date(item.timestamp.seconds*1000).toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'})) : '-'}
+                                        </td>
+                                        <td className="px-6 py-4 font-medium">{item.userName}</td>
+                                        <td className="px-6 py-4">
+                                            <span className={`px-2 py-1 rounded text-xs font-bold ${
+                                                item.type === 'MASUK' ? 'bg-green-100 text-green-800' : 
+                                                item.type === 'KELUAR' ? 'bg-red-100 text-red-800' : 
+                                                item.type === 'CUTI' ? 'bg-purple-100 text-purple-800' :
+                                                'bg-yellow-100 text-yellow-800'}`}>
+                                                {item.type}
+                                            </span>
+                                        </td>
+                                        <td className="px-6 py-4 text-gray-500">{item.dateString}</td>
+                                        <td className="px-6 py-4 text-gray-500">{item.locationStatus}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            );
+        }
+
+        function UsersTab({ db, appId, settings, showNotify }) {
+            const [users, setUsers] = React.useState([]);
+            const [form, setForm] = React.useState({ name: '', role: 'SISWA', barcodeId: '', extra: '' });
+            const [loading, setLoading] = React.useState(false);
+            const [previewQR, setPreviewQR] = React.useState(null);
+
+            const fetchUsers = async () => {
+                if (settings.sheetUrl) {
+                    try {
+                        const res = await callSheetAPI(settings.sheetUrl, 'getUsers');
+                        setUsers(res);
+                    } catch(e) { showNotify('Gagal load user sheet', 'error'); }
+                } else {
+                    const ref = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('users');
+                    const snap = await ref.get();
+                    setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+                }
+            };
+
+            React.useEffect(() => { fetchUsers(); }, [settings.sheetUrl]);
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                setLoading(true);
+                try {
+                    // Cek duplikat lokal dulu
+                    if (users.find(u => u.barcodeId == form.barcodeId)) {
+                        showNotify('QR ID sudah ada!', 'error'); setLoading(false); return;
+                    }
+
+                    if (settings.sheetUrl) {
+                        await callSheetAPI(settings.sheetUrl, 'addUser', form);
+                    } else {
+                        await db.collection('artifacts').doc(appId).collection('public').doc('data').collection('users').add(form);
+                    }
+                    showNotify('User disimpan', 'success');
+                    setForm({ name: '', role: 'SISWA', barcodeId: '', extra: '' });
+                    fetchUsers();
+                } catch (err) { showNotify('Gagal simpan', 'error'); }
+                setLoading(false);
+            };
+
+            const deleteUser = async (id, barcodeId) => {
+                if(!confirm('Hapus user?')) return;
+                try {
+                    if (settings.sheetUrl) {
+                        await callSheetAPI(settings.sheetUrl, 'deleteUser', { barcodeId });
+                    } else {
+                        await db.collection('artifacts').doc(appId).collection('public').doc('data').collection('users').doc(id).delete();
+                    }
+                    fetchUsers();
+                    showNotify('Terhapus', 'success');
+                } catch(e) { showNotify('Gagal hapus', 'error'); }
+            };
+
+            const showQRModal = (user) => {
+                setPreviewQR(user);
+                setTimeout(() => { const canvas = document.getElementById('qr-canvas'); if (canvas) new QRious({ element: canvas, value: user.barcodeId, size: 200 }); }, 100);
+            };
+
+            // Fungsi Cetak Kartu PDF
+            const printCard = (userOrList) => {
+                const doc = new jspdf.jsPDF();
+                const list = Array.isArray(userOrList) ? userOrList : [userOrList];
+                
+                let x = 10, y = 10;
+                const cardWidth = 85; // Lebar Kartu (mm)
+                const cardHeight = 54; // Tinggi Kartu (mm)
+                const gap = 10;
+
+                list.forEach((u, index) => {
+                    // Cek Ganti Halaman
+                    if (y + cardHeight > 280) {
+                        doc.addPage();
+                        y = 10;
+                        x = 10;
+                    }
+
+                    // Border Kartu
+                    doc.setDrawColor(0);
+                    doc.setLineWidth(0.5);
+                    doc.rect(x, y, cardWidth, cardHeight);
+
+                    // Header Biru
+                    doc.setFillColor(59, 130, 246); // Blue Tailwind
+                    doc.rect(x, y, cardWidth, 12, 'F');
+
+                    // Nama Sekolah
+                    doc.setTextColor(255, 255, 255);
+                    doc.setFontSize(8);
+                    doc.setFont("helvetica", "bold");
+                    doc.text(settings.schoolName || 'KARTU ABSENSI', x + cardWidth/2, y + 8, { align: 'center' });
+
+                    // Nama Siswa
+                    doc.setTextColor(0, 0, 0);
+                    doc.setFontSize(11);
+                    doc.setFont("helvetica", "bold");
+                    doc.text(u.name.toUpperCase(), x + cardWidth/2, y + 22, { align: 'center' });
+                    
+                    // Role & Info
+                    doc.setFontSize(9);
+                    doc.setFont("helvetica", "normal");
+                    doc.text(u.role + (u.extra ? ` - ${u.extra}` : ''), x + cardWidth/2, y + 27, { align: 'center' });
+
+                    // QR Code Image
+                    const qr = new QRious({ value: u.barcodeId, size: 150 });
+                    const imgData = qr.toDataURL();
+                    doc.addImage(imgData, 'JPEG', x + (cardWidth - 22)/2, y + 30, 22, 22);
+
+                    // ID Text
+                    doc.setFontSize(7);
+                    doc.text(u.barcodeId, x + cardWidth/2, y + 53, { align: 'center' });
+
+                    // Logika Grid (2 Kolom)
+                    if (x === 10) {
+                        x += cardWidth + gap;
+                    } else {
+                        x = 10;
+                        y += cardHeight + gap;
+                    }
+                });
+
+                doc.save(Array.isArray(userOrList) ? 'Semua_Kartu_QR.pdf' : `Kartu_${userOrList.name}.pdf`);
+            };
+
+            return (
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                    <div className="bg-gray-50 p-6 rounded-lg border">
+                        <h4 className="font-bold mb-4">Tambah User</h4>
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <input type="text" className="w-full border p-2 rounded" placeholder="Nama" value={form.name} onChange={e => setForm({...form, name: e.target.value})} />
+                            <select className="w-full border p-2 rounded" value={form.role} onChange={e => setForm({...form, role: e.target.value})}><option>SISWA</option><option>GURU</option><option>TENDIK</option></select>
+                            <input type="text" className="w-full border p-2 rounded" placeholder="Kelas / Jabatan" value={form.extra} onChange={e => setForm({...form, extra: e.target.value})} />
+                            <div className="flex gap-2"><input type="text" className="w-full border p-2 rounded" placeholder="QR ID" value={form.barcodeId} onChange={e => setForm({...form, barcodeId: e.target.value})} /><button type="button" onClick={() => setForm({...form, barcodeId: Math.floor(100000+Math.random()*900000).toString()})} className="bg-gray-200 px-3 rounded"><i className="fas fa-magic"></i></button></div>
+                            <button disabled={loading} className="w-full bg-blue-600 text-white py-2 rounded">{loading ? '...' : 'Simpan'}</button>
+                        </form>
+                    </div>
+                    <div className="lg:col-span-2 bg-white border rounded-lg max-h-[500px] overflow-y-auto">
+                        <div className="flex justify-between items-center p-4 border-b bg-gray-50 sticky top-0">
+                             <div className="font-bold text-gray-700">Daftar User ({users.length})</div>
+                             <button onClick={() => printCard(users)} className="bg-purple-600 hover:bg-purple-700 text-white text-xs px-3 py-1.5 rounded flex items-center shadow-sm">
+                                <i className="fas fa-print mr-1"></i> Cetak Semua PDF
+                             </button>
+                        </div>
+                        <table className="min-w-full divide-y divide-gray-200 text-sm">
+                            <thead className="bg-gray-50"><tr><th className="px-4 py-2 text-left">Nama</th><th className="px-4 py-2">Role</th><th className="px-4 py-2">QR ID</th><th className="px-4 py-2">Aksi</th></tr></thead>
+                            <tbody className="divide-y">{users.map((u, i) => (<tr key={i}><td className="px-4 py-3">{u.name}<div className="text-xs text-gray-400">{u.extra}</div></td><td className="px-4 py-3">{u.role}</td><td className="px-4 py-3 font-mono">{u.barcodeId}</td><td className="px-4 py-3"><button onClick={()=>showQRModal(u)} className="text-blue-500 mr-2"><i className="fas fa-qrcode"></i></button><button onClick={()=>deleteUser(u.id, u.barcodeId)} className="text-red-500"><i className="fas fa-trash"></i></button></td></tr>))}</tbody>
+                        </table>
+                    </div>
+                    {previewQR && <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={() => setPreviewQR(null)}><div className="bg-white p-6 rounded-xl max-w-sm w-full text-center" onClick={e=>e.stopPropagation()}><h3 className="font-bold">{previewQR.name}</h3><div className="flex justify-center my-4"><canvas id="qr-canvas"></canvas></div><div className="flex space-x-2"><button onClick={() => printCard(previewQR)} className="flex-1 bg-purple-600 text-white py-2 rounded hover:bg-purple-700"><i className="fas fa-print mr-1"></i> Cetak</button><button onClick={() => setPreviewQR(null)} className="flex-1 bg-gray-200 py-2 rounded hover:bg-gray-300">Tutup</button></div></div></div>}
+                </div>
+            );
+        }
+
+        function SettingsTab({ db, appId, currentSettings, showNotify }) {
+            const [localSet, setLocalSet] = React.useState(currentSettings);
+            const [currentGPS, setCurrentGPS] = React.useState(null); // New state for live preview
+
+            // Add effect to get current GPS for preview
+            React.useEffect(() => {
+                if ("geolocation" in navigator) {
+                    navigator.geolocation.getCurrentPosition(function(position) {
+                        setCurrentGPS({
+                            lat: position.coords.latitude,
+                            lng: position.coords.longitude,
+                            acc: position.coords.accuracy
+                        });
+                    }, (err) => {
+                        console.error("Settings GPS Error:", err);
+                        setCurrentGPS({ error: "Gagal mengambil lokasi: " + err.message });
+                    });
+                } else {
+                    setCurrentGPS({ error: "Geolocation tidak didukung browser ini." });
+                }
+            }, []);
+
+            const save = async () => {
+                try { await db.collection('artifacts').doc(appId).collection('public').doc('data').collection('settings').doc('school_config').set(localSet); showNotify('Tersimpan', 'success'); } 
+                catch (e) { showNotify('Gagal', 'error'); }
+            };
+
+            const setCurrentLocation = () => {
+                navigator.geolocation.getCurrentPosition(pos => {
+                    setLocalSet({
+                        ...localSet,
+                        schoolLat: pos.coords.latitude,
+                        schoolLng: pos.coords.longitude
+                    });
+                    showNotify('Koordinat diambil dari lokasi saat ini', 'success');
+                }, (err) => {
+                    let msg = 'Gagal ambil lokasi';
+                    if(err.code === 1) msg = 'Izin Lokasi Ditolak';
+                    else if(err.code === 2) msg = 'Posisi Tidak Tersedia/Sinyal Lemah';
+                    else if(err.code === 3) msg = 'Timeout';
+                    showNotify(msg, 'error');
+                }, { timeout: 10000, enableHighAccuracy: true });
+            };
+
+            return (
+                <div className="max-w-xl space-y-4">
+                    <h3 className="text-xl font-bold">Pengaturan</h3>
+                    <div><label className="text-sm font-bold block mb-1">URL Google Apps Script (Wajib untuk Spreadsheet Database)</label><input type="text" className="w-full border border-blue-300 bg-blue-50 rounded p-2 text-sm font-mono" placeholder="https://script.google.com/macros/s/..../exec" value={localSet.sheetUrl} onChange={e => setLocalSet({...localSet, sheetUrl: e.target.value})} /><p className="text-xs text-gray-500 mt-1">Kosongkan jika ingin menggunakan database lokal browser.</p></div>
+                    <div><label className="text-sm font-bold block">Nama Sekolah</label><input type="text" className="w-full border rounded p-2" value={localSet.schoolName} onChange={e => setLocalSet({...localSet, schoolName: e.target.value})} /></div>
+                    
+                     {/* Location Section Enhanced */}
+                     <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
+                        <h4 className="font-bold text-blue-800 mb-2">Titik Koordinat Sekolah</h4>
+                        <p className="text-xs text-blue-600 mb-4">
+                            Untuk mengisi otomatis, berdirilah di lokasi sekolah lalu klik tombol di bawah ini.
+                        </p>
+                        
+                        {/* Live GPS Info */}
+                        <div className="mb-4 text-xs text-gray-500 flex justify-between bg-white p-2 rounded">
+                            <span>
+                                GPS Perangkat Anda: 
+                                {currentGPS?.error ? <span className="text-red-500 ml-1">{currentGPS.error}</span> : 
+                                 currentGPS ? `${currentGPS.lat.toFixed(6)}, ${currentGPS.lng.toFixed(6)}` : 'Mencari...'}
+                            </span>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4 mb-2">
+                             <div><label className="text-sm block">Latitude</label><input type="number" className="w-full border rounded p-2" value={localSet.schoolLat} onChange={e => setLocalSet({...localSet, schoolLat: parseFloat(e.target.value)})} /></div><div><label className="text-sm block">Longitude</label><input type="number" className="w-full border rounded p-2" value={localSet.schoolLng} onChange={e => setLocalSet({...localSet, schoolLng: parseFloat(e.target.value)})} /></div>
+                        </div>
+
+                        <button 
+                            onClick={setCurrentLocation}
+                            className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded flex items-center justify-center gap-2 transition"
+                        >
+                            <i className="fas fa-map-marker-alt"></i> Ambil Lokasi Saya Saat Ini
+                        </button>
+                    </div>
+
+                    <div><label className="text-sm block">Radius (m)</label><input type="number" className="w-full border rounded p-2" value={localSet.radius} onChange={e => setLocalSet({...localSet, radius: parseInt(e.target.value)})} /></div>
+                    <button onClick={save} className="bg-blue-600 text-white px-6 py-2 rounded font-bold">Simpan</button>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
