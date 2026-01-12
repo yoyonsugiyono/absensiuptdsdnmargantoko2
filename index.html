@@ -60,11 +60,7 @@
 
     <script type="text/babel">
         // --- KONFIGURASI FIREBASE ---
-        
-        // Cek apakah kita sedang di environment Canvas (Preview) atau GitHub (Production)
         const isCanvasEnv = typeof window !== 'undefined' && window.__firebase_config;
-        
-        // Jika di Canvas, gunakan config internal. Jika tidak, gunakan config Proyek Anda.
         const firebaseConfig = isCanvasEnv ? JSON.parse(window.__firebase_config) : {
             apiKey: "AIzaSyBeyEIXS6V9-8M4GzF65aK05ba_YZUnaQA",
             authDomain: "absensi-sdn-margantoko-2.firebaseapp.com",
@@ -80,13 +76,13 @@
             try {
                 firebase.initializeApp(firebaseConfig);
             } catch (e) {
-                console.error("Firebase init error. Pastikan config sudah diisi!", e);
+                console.error("Firebase init error", e);
             }
         }
         const auth = firebase.auth();
         const db = firebase.firestore();
 
-        // --- UTILS (Fungsi Bantuan) ---
+        // --- UTILS ---
         const calculateDistance = (lat1, lon1, lat2, lon2) => {
             if (!lat1 || !lon1 || !lat2 || !lon2) return 9999999;
             const R = 6371e3; 
@@ -99,26 +95,28 @@
             return R * c; 
         };
 
-        // --- GOOGLE SHEET API HELPER ---
+        // Fungsi mendapatkan tanggal lokal YYYY-MM-DD (Penting untuk fix bug tanggal)
+        const getLocalDateString = (dateObj = new Date()) => {
+            const year = dateObj.getFullYear();
+            const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+            const day = String(dateObj.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        };
+
         const callSheetAPI = async (url, action, data = null) => {
             if (!url) throw new Error("URL Spreadsheet belum disetting!");
-            
             const payload = JSON.stringify({ action, ...data });
-            
             const response = await fetch(url, {
                 method: 'POST',
                 mode: 'cors', 
-                headers: {
-                    'Content-Type': 'text/plain;charset=utf-8', 
-                },
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
                 body: payload
             });
-
             if (!response.ok) throw new Error("Gagal menghubungi Spreadsheet");
             return await response.json();
         };
 
-        // --- KOMPONEN UTAMA ---
+        // --- COMPONENTS ---
 
         function App() {
             const [user, setUser] = React.useState(null);
@@ -128,7 +126,6 @@
                 schoolLng: 113.1094208,
                 radius: 100, 
                 schoolName: 'UPTD SDN Margantoko 2',
-                // URL Spreadsheet Langsung di-hardcode disini
                 sheetUrl: 'https://script.google.com/macros/s/AKfycbzbIBb_wBJxdfnwCurBJ-ndc-50jdTfCUJw3cn-0iY2GT3UfuHRKEdfg4VKgbXH3hEVOw/exec' 
             });
             const [notification, setNotification] = React.useState(null);
@@ -136,16 +133,9 @@
             React.useEffect(() => {
                 const initAuth = async () => {
                     try {
-                        // Logika Login: Gunakan Token HANYA jika di Canvas Environment
-                        if (isCanvasEnv && window.__initial_auth_token) {
-                            await auth.signInWithCustomToken(window.__initial_auth_token);
-                        } else {
-                            // Di GitHub atau Localhost, gunakan Anonymous
-                            await auth.signInAnonymously();
-                        }
-                    } catch (error) { 
-                        console.error("Auth Error:", error);
-                    }
+                        if (isCanvasEnv && window.__initial_auth_token) await auth.signInWithCustomToken(window.__initial_auth_token);
+                        else await auth.signInAnonymously();
+                    } catch (error) { console.error("Auth Error:", error); }
                 };
                 initAuth();
 
@@ -156,20 +146,11 @@
                         settingsRef.onSnapshot(doc => {
                             if (doc.exists) {
                                 const data = doc.data();
-                                // Prioritaskan URL hardcode jika di database kosong, tapi gunakan DB jika ada isinya (untuk fleksibilitas)
-                                // Jika user ingin memaksa hardcode, kita bisa abaikan data.sheetUrl
-                                if (!data.sheetUrl) {
-                                    data.sheetUrl = settings.sheetUrl;
-                                }
+                                if (!data.sheetUrl) data.sheetUrl = settings.sheetUrl;
                                 setSettings(prev => ({...prev, ...data}));
-                            }
-                            else settingsRef.set(settings);
+                            } else settingsRef.set(settings);
                             setView('kiosk');
-                        }, (err) => {
-                            console.error("Gagal load settings:", err);
-                            // Tetap masuk ke Kiosk meski gagal load setting (offline mode mungkin)
-                            setView('kiosk');
-                        });
+                        }, () => setView('kiosk'));
                     }
                 });
                 return () => unsubscribeAuth();
@@ -267,7 +248,6 @@
             const html5QrcodeScannerRef = React.useRef(null);
             const [offlineUsers, setOfflineUsers] = React.useState([]);
 
-            // Load Users
             React.useEffect(() => {
                 const loadUsers = async () => {
                     if (settings.sheetUrl) {
@@ -294,16 +274,14 @@
                     },
                     (err) => {
                         let msg = 'GPS Error';
-                        if (err.code === 1) msg = 'Izin Lokasi Ditolak (Cek Browser)';
-                        else if (err.code === 2) msg = 'Posisi Tidak Tersedia (Sinyal Lemah)';
-                        else if (err.code === 3) msg = 'GPS Timeout (Kelamaan)';
+                        if (err.code === 1) msg = 'Izin Lokasi Ditolak';
+                        else if (err.code === 2) msg = 'Sinyal Lemah';
+                        else if (err.code === 3) msg = 'Timeout';
                         setLocError(msg);
                     }, 
                     { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
                 );
-                
                 if(inputRef.current) inputRef.current.focus();
-                
                 return () => navigator.geolocation.clearWatch(watchId);
             }, [settings]);
 
@@ -332,17 +310,15 @@
                 setLoading(true);
                 try {
                     const user = offlineUsers.find(u => u.barcodeId == codeId.trim());
-
                     if (!user) {
-                        showNotify('QR Code tidak ditemukan di database!', 'error');
+                        showNotify('QR Code tidak ditemukan!', 'error');
                         setBarcode('');
                         setLoading(false);
                         return;
                     }
 
-                    // --- VALIDASI ROLE KHUSUS ---
                     if (status === 'DINAS' && !['GURU', 'TENDIK'].includes(user.role)) {
-                        showNotify('Status DINAS LUAR hanya untuk GURU dan TENDIK!', 'error');
+                        showNotify('Status DINAS hanya untuk GURU dan TENDIK!', 'error');
                         setBarcode('');
                         setLoading(false);
                         return;
@@ -350,8 +326,8 @@
 
                     const isSpecialStatus = ['IJIN', 'SAKIT', 'DINAS'].includes(status);
                     if (!isSpecialStatus) {
-                        if (!currentLoc) { showNotify(`Gagal: ${locError || 'Menunggu sinyal GPS...'}`, 'error'); setLoading(false); return; }
-                        if (distance > settings.radius) { showNotify(`Gagal! Jarak ${Math.round(distance)}m. Max ${settings.radius}m.`, 'error'); setBarcode(''); setLoading(false); return; }
+                        if (!currentLoc) { showNotify(`Gagal: ${locError}`, 'error'); setLoading(false); return; }
+                        if (distance > settings.radius) { showNotify(`Gagal! Jarak ${Math.round(distance)}m > ${settings.radius}m.`, 'error'); setBarcode(''); setLoading(false); return; }
                     }
 
                     const dataPayload = {
@@ -359,7 +335,7 @@
                         userRole: user.role,
                         userBarcode: user.barcodeId,
                         type: status,
-                        dateString: new Date().toISOString().split('T')[0],
+                        dateString: getLocalDateString(), // PENTING: Gunakan waktu lokal
                         latitude: currentLoc ? currentLoc.lat : 0,
                         longitude: currentLoc ? currentLoc.lng : 0,
                         locationStatus: isSpecialStatus ? 'Manual' : 'On-Site',
@@ -379,7 +355,6 @@
                     showNotify(`Berhasil! ${user.name} - Absen ${status}`, 'success');
                     setBarcode('');
                 } catch (err) {
-                    console.error(err);
                     showNotify('Gagal menyimpan: ' + err.message, 'error');
                 } finally {
                     setLoading(false);
@@ -388,11 +363,7 @@
             }
 
             const statusColors = { 
-                'MASUK': 'bg-green-600', 
-                'KELUAR': 'bg-red-600', 
-                'IJIN': 'bg-yellow-500', 
-                'SAKIT': 'bg-orange-500', 
-                'DINAS': 'bg-blue-500' 
+                'MASUK': 'bg-green-600', 'KELUAR': 'bg-red-600', 'IJIN': 'bg-yellow-500', 'SAKIT': 'bg-orange-500', 'DINAS': 'bg-blue-500' 
             };
 
             return (
@@ -436,7 +407,6 @@
                             {!showCamera && (
                                 <form onSubmit={(e) => { e.preventDefault(); processAbsen(barcode); }} className="relative">
                                     <input ref={inputRef} type="text" value={barcode} onChange={(e) => setBarcode(e.target.value)} className="w-full pl-12 pr-4 py-4 text-xl border-2 border-gray-200 rounded-xl focus:border-blue-500 focus:ring-4 focus:ring-blue-100 transition outline-none font-mono tracking-widest text-center" placeholder="Kode QR..." autoFocus disabled={loading} />
-                                    <i className="fas fa-keyboard absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400 text-xl"></i>
                                     <button type="submit" disabled={loading} className={`mt-4 w-full py-3 rounded-xl font-bold text-white shadow-lg transition transform active:scale-95 ${loading ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'}`}>{loading ? 'Memproses...' : 'KIRIM ABSENSI'}</button>
                                 </form>
                             )}
@@ -469,7 +439,6 @@
             );
         }
 
-        // --- NEW COMPONENT: LEAVE TAB ---
         function LeaveTab({ db, appId, settings, showNotify }) {
             const [users, setUsers] = React.useState([]);
             const [selectedUser, setSelectedUser] = React.useState('');
@@ -483,13 +452,11 @@
                     if (settings.sheetUrl) {
                         try {
                             const res = await callSheetAPI(settings.sheetUrl, 'getUsers');
-                            // Filter only Guru & Tendik
                             setUsers(res.filter(u => ['GURU', 'TENDIK'].includes(u.role)));
                         } catch(e) { console.error(e); }
                     } else {
                         const snap = await db.collection('artifacts').doc(appId).collection('public').doc('data').collection('users').get();
-                        const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-                        setUsers(all.filter(u => ['GURU', 'TENDIK'].includes(u.role)));
+                        setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(u => ['GURU', 'TENDIK'].includes(u.role)));
                     }
                 };
                 fetchUsers();
@@ -498,20 +465,17 @@
             const handleSubmit = async (e) => {
                 e.preventDefault();
                 if (!selectedUser || !startDate || !endDate) {
-                    showNotify('Pilih User dan Rentang Tanggal', 'error');
+                    showNotify('Lengkapi data form', 'error');
                     return;
                 }
-                
                 setLoading(true);
                 const user = users.find(u => u.barcodeId === selectedUser);
                 const start = new Date(startDate);
                 const end = new Date(endDate);
-                
-                // Array of promises/operations
                 const operations = [];
 
                 for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-                    const dateStr = d.toISOString().split('T')[0];
+                    const dateStr = getLocalDateString(d); // PENTING: Gunakan format lokal
                     const dataPayload = {
                         userName: user.name,
                         userRole: user.role,
@@ -522,7 +486,7 @@
                         longitude: 0,
                         locationStatus: `Admin Plot (${reason})`,
                         distance: 0,
-                        timestamp: d.toISOString() // Use the plotted date as timestamp
+                        timestamp: d.toISOString()
                     };
 
                     if (settings.sheetUrl) {
@@ -538,61 +502,28 @@
                 try {
                     await Promise.all(operations);
                     showNotify(`Berhasil plot cuti untuk ${user.name}`, 'success');
-                    setStartDate('');
-                    setEndDate('');
-                } catch (err) {
-                    showNotify('Terjadi kesalahan saat menyimpan cuti', 'error');
-                }
+                    setStartDate(''); setEndDate('');
+                } catch (err) { showNotify('Gagal menyimpan cuti', 'error'); }
                 setLoading(false);
             };
 
             return (
                 <div className="max-w-xl bg-white p-6 rounded-lg border">
                     <h3 className="text-xl font-bold mb-4">Kelola Cuti (Guru & Tendik)</h3>
-                    <p className="text-sm text-gray-500 mb-6">Sistem ini akan otomatis mengisi absensi dengan status "CUTI" pada rentang tanggal yang dipilih.</p>
-                    
                     <form onSubmit={handleSubmit} className="space-y-4">
-                        <div>
-                            <label className="block text-sm font-medium mb-1">Pilih Pegawai</label>
-                            <select 
-                                className="w-full border p-2 rounded" 
-                                value={selectedUser} 
-                                onChange={e => setSelectedUser(e.target.value)}
-                            >
-                                <option value="">-- Pilih Nama --</option>
-                                {users.map(u => (
-                                    <option key={u.barcodeId} value={u.barcodeId}>{u.name} ({u.role})</option>
-                                ))}
-                            </select>
-                        </div>
-                        
-                        <div className="grid grid-cols-2 gap-4">
-                            <div>
-                                <label className="block text-sm font-medium mb-1">Dari Tanggal</label>
-                                <input type="date" className="w-full border p-2 rounded" value={startDate} onChange={e => setStartDate(e.target.value)} />
-                            </div>
-                            <div>
-                                <label className="block text-sm font-medium mb-1">Sampai Tanggal</label>
-                                <input type="date" className="w-full border p-2 rounded" value={endDate} onChange={e => setEndDate(e.target.value)} />
-                            </div>
-                        </div>
-
-                        <div>
-                            <label className="block text-sm font-medium mb-1">Keterangan Cuti</label>
-                            <input type="text" className="w-full border p-2 rounded" value={reason} onChange={e => setReason(e.target.value)} placeholder="Contoh: Cuti Tahunan, Menikah, dll" />
-                        </div>
-
-                        <button disabled={loading} className="w-full bg-purple-600 text-white py-2 rounded font-bold hover:bg-purple-700 transition">
-                            {loading ? 'Sedang Memproses...' : 'Simpan Data Cuti'}
-                        </button>
+                        <div><label className="block text-sm font-medium mb-1">Pilih Pegawai</label><select className="w-full border p-2 rounded" value={selectedUser} onChange={e => setSelectedUser(e.target.value)}><option value="">-- Pilih Nama --</option>{users.map(u => (<option key={u.barcodeId} value={u.barcodeId}>{u.name} ({u.role})</option>))}</select></div>
+                        <div className="grid grid-cols-2 gap-4"><div><label className="block text-sm font-medium mb-1">Dari Tanggal</label><input type="date" className="w-full border p-2 rounded" value={startDate} onChange={e => setStartDate(e.target.value)} /></div><div><label className="block text-sm font-medium mb-1">Sampai Tanggal</label><input type="date" className="w-full border p-2 rounded" value={endDate} onChange={e => setEndDate(e.target.value)} /></div></div>
+                        <div><label className="block text-sm font-medium mb-1">Keterangan</label><input type="text" className="w-full border p-2 rounded" value={reason} onChange={e => setReason(e.target.value)} /></div>
+                        <button disabled={loading} className="w-full bg-purple-600 text-white py-2 rounded font-bold">{loading ? '...' : 'Simpan Cuti'}</button>
                     </form>
                 </div>
             );
         }
 
         function ReportTab({ db, appId, settings }) {
-            const [startDate, setStartDate] = React.useState(new Date().toISOString().split('T')[0]);
-            const [endDate, setEndDate] = React.useState(new Date().toISOString().split('T')[0]);
+            const [startDate, setStartDate] = React.useState(getLocalDateString());
+            const [endDate, setEndDate] = React.useState(getLocalDateString());
+            const [filterRole, setFilterRole] = React.useState('SEMUA'); // New Filter State
             const [data, setData] = React.useState([]);
             const [loading, setLoading] = React.useState(false);
 
@@ -602,25 +533,23 @@
                     let res = [];
                     if (settings.sheetUrl) {
                         const allData = await callSheetAPI(settings.sheetUrl, 'getAttendance');
-                        console.log("Raw Sheet Data:", allData); // Debugging
-                        
-                        // Perbaikan: Normalisasi tanggal dari Sheet yang mungkin berupa ISO String panjang
                         res = allData.filter(d => {
                             if (!d.dateString) return false;
-                            // Ambil 10 karakter pertama (YYYY-MM-DD)
                             const dateOnly = String(d.dateString).substring(0, 10);
                             return dateOnly >= startDate && dateOnly <= endDate;
                         });
                     } else {
                         const ref = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('attendance');
-                        const snapshot = await ref
-                            .where('dateString', '>=', startDate)
-                            .where('dateString', '<=', endDate)
-                            .get();
+                        const snapshot = await ref.where('dateString', '>=', startDate).where('dateString', '<=', endDate).get();
                         res = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     }
                     
-                    // Client side sort (Newest First)
+                    // Filter berdasarkan Role
+                    if (filterRole !== 'SEMUA') {
+                        res = res.filter(item => item.userRole === filterRole);
+                    }
+
+                    // Sort newest first
                     res.sort((a, b) => {
                         const tA = a.timestamp?.seconds || (new Date(a.timestamp).getTime()/1000) || 0;
                         const tB = b.timestamp?.seconds || (new Date(b.timestamp).getTime()/1000) || 0;
@@ -628,68 +557,89 @@
                     });
                     
                     setData(res);
-                } catch (err) { 
-                    console.error(err);
-                    alert("Gagal mengambil data: " + err.message); 
-                }
+                } catch (err) { alert("Gagal data: " + err.message); }
                 setLoading(false);
             };
 
-            React.useEffect(() => { fetchData(); }, [startDate, endDate, settings.sheetUrl]);
+            React.useEffect(() => { fetchData(); }, [startDate, endDate, filterRole, settings.sheetUrl]);
 
             const exportExcel = () => {
                 const worksheet = XLSX.utils.json_to_sheet(data.map(item => ({
-                    Nama: item.userName,
-                    Role: item.userRole,
-                    Tipe: item.type,
-                    Tanggal: String(item.dateString).substring(0,10),
+                    Nama: item.userName, Role: item.userRole, Tipe: item.type, Tanggal: String(item.dateString).substring(0,10),
                     Waktu: item.timestamp ? (typeof item.timestamp === 'string' ? item.timestamp.split('T')[1].substring(0,5) : new Date(item.timestamp.seconds*1000).toLocaleTimeString('id-ID')) : '-',
-                    Lokasi: item.locationStatus,
-                    Jarak: item.distance + ' m'
+                    Lokasi: item.locationStatus, Jarak: item.distance + ' m'
                 })));
                 const workbook = XLSX.utils.book_new();
                 XLSX.utils.book_append_sheet(workbook, worksheet, "Absensi");
-                XLSX.writeFile(workbook, `Absensi_${startDate}_sd_${endDate}.xlsx`);
+                XLSX.writeFile(workbook, `Absensi_${filterRole}_${startDate}_sd_${endDate}.xlsx`);
             };
 
             return (
                 <div>
-                    <div className="flex flex-col md:flex-row justify-between items-center mb-6">
-                        <h3 className="text-2xl font-bold mb-4 md:mb-0">Rekap Absensi</h3>
-                        <div className="flex flex-wrap gap-2 items-center">
-                            <div className="flex items-center gap-1">
-                                <span className="text-xs text-gray-500">Dari:</span>
-                                <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="border rounded px-2 py-1 text-sm" />
+                    <div className="flex flex-col space-y-4 mb-6">
+                        <h3 className="text-2xl font-bold text-gray-800">Rekap Absensi</h3>
+                        
+                        <div className="flex flex-wrap gap-3 items-end bg-gray-50 p-4 rounded-lg border">
+                            <div>
+                                <label className="block text-xs text-gray-500 font-bold mb-1">Filter Role:</label>
+                                <select 
+                                    value={filterRole} 
+                                    onChange={(e) => setFilterRole(e.target.value)}
+                                    className="border rounded px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                                >
+                                    <option value="SEMUA">SEMUA USER</option>
+                                    <option value="GURU">HANYA GURU</option>
+                                    <option value="TENDIK">HANYA TENDIK</option>
+                                    <option value="SISWA">HANYA SISWA</option>
+                                </select>
                             </div>
-                            <div className="flex items-center gap-1">
-                                <span className="text-xs text-gray-500">Sampai:</span>
-                                <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="border rounded px-2 py-1 text-sm" />
+                            
+                            <div>
+                                <label className="block text-xs text-gray-500 font-bold mb-1">Dari:</label>
+                                <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="border rounded px-3 py-2 text-sm bg-white" />
                             </div>
-                            <button onClick={exportExcel} className="bg-green-600 text-white px-4 py-1.5 rounded text-sm hover:bg-green-700 transition">
-                                <i className="fas fa-file-excel mr-1"></i> Excel
+                            
+                            <div>
+                                <label className="block text-xs text-gray-500 font-bold mb-1">Sampai:</label>
+                                <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="border rounded px-3 py-2 text-sm bg-white" />
+                            </div>
+
+                            <button onClick={exportExcel} className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded text-sm font-bold flex items-center shadow-sm h-[38px]">
+                                <i className="fas fa-file-excel mr-2"></i> Export Excel
                             </button>
                         </div>
                     </div>
-                    <div className="overflow-x-auto bg-white border rounded-lg max-h-[600px]">
+
+                    <div className="overflow-x-auto bg-white border rounded-lg shadow-sm">
                         <table className="min-w-full divide-y divide-gray-200">
                             <thead className="bg-gray-50 sticky top-0">
                                 <tr>
-                                    <th className="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase">Waktu</th>
-                                    <th className="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase">Nama</th>
-                                    <th className="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase">Status</th>
-                                    <th className="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase">Tanggal</th>
-                                    <th className="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase">Ket</th>
+                                    <th className="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Waktu</th>
+                                    <th className="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Nama</th>
+                                    <th className="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Role</th>
+                                    <th className="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Status</th>
+                                    <th className="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Ket</th>
                                 </tr>
                             </thead>
                             <tbody className="bg-white divide-y divide-gray-200 text-sm">
-                                {loading ? <tr><td colSpan="5" className="text-center py-4">Loading...</td></tr> : 
-                                 data.length === 0 ? <tr><td colSpan="5" className="text-center py-4 text-gray-400">Tidak ada data di rentang tanggal ini.</td></tr> :
+                                {loading ? <tr><td colSpan="5" className="text-center py-8 text-gray-500">Memuat data...</td></tr> : 
+                                 data.length === 0 ? <tr><td colSpan="5" className="text-center py-8 text-gray-400">Tidak ada data ditemukan.</td></tr> :
                                  data.map((item, i) => (
-                                    <tr key={i} className="hover:bg-gray-50">
-                                        <td className="px-6 py-4 whitespace-nowrap text-gray-500">
-                                            {item.timestamp ? (typeof item.timestamp === 'string' ? item.timestamp.split('T')[1].substring(0,5) : new Date(item.timestamp.seconds*1000).toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'})) : '-'}
+                                    <tr key={i} className="hover:bg-blue-50 transition-colors">
+                                        <td className="px-6 py-4 whitespace-nowrap text-gray-600 font-mono text-xs">
+                                            {String(item.dateString).substring(0,10)} <br/>
+                                            <span className="font-bold text-gray-800">
+                                                {item.timestamp ? (typeof item.timestamp === 'string' ? item.timestamp.split('T')[1].substring(0,5) : new Date(item.timestamp.seconds*1000).toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'})) : '-'}
+                                            </span>
                                         </td>
-                                        <td className="px-6 py-4 font-medium">{item.userName}</td>
+                                        <td className="px-6 py-4 font-medium text-gray-900">{item.userName}</td>
+                                        <td className="px-6 py-4">
+                                            <span className={`text-[10px] font-bold px-2 py-1 rounded-full border ${
+                                                item.userRole === 'GURU' ? 'bg-purple-50 text-purple-700 border-purple-200' :
+                                                item.userRole === 'TENDIK' ? 'bg-orange-50 text-orange-700 border-orange-200' :
+                                                'bg-blue-50 text-blue-700 border-blue-200'
+                                            }`}>{item.userRole}</span>
+                                        </td>
                                         <td className="px-6 py-4">
                                             <span className={`px-2 py-1 rounded text-xs font-bold ${
                                                 item.type === 'MASUK' ? 'bg-green-100 text-green-800' : 
@@ -699,8 +649,7 @@
                                                 {item.type}
                                             </span>
                                         </td>
-                                        <td className="px-6 py-4 text-gray-500">{String(item.dateString).substring(0,10)}</td>
-                                        <td className="px-6 py-4 text-gray-500">{item.locationStatus}</td>
+                                        <td className="px-6 py-4 text-gray-500 text-xs">{item.locationStatus}</td>
                                     </tr>
                                 ))}
                             </tbody>
@@ -735,16 +684,11 @@
                 e.preventDefault();
                 setLoading(true);
                 try {
-                    // Cek duplikat lokal dulu
                     if (users.find(u => u.barcodeId == form.barcodeId)) {
                         showNotify('QR ID sudah ada!', 'error'); setLoading(false); return;
                     }
-
-                    if (settings.sheetUrl) {
-                        await callSheetAPI(settings.sheetUrl, 'addUser', form);
-                    } else {
-                        await db.collection('artifacts').doc(appId).collection('public').doc('data').collection('users').add(form);
-                    }
+                    if (settings.sheetUrl) await callSheetAPI(settings.sheetUrl, 'addUser', form);
+                    else await db.collection('artifacts').doc(appId).collection('public').doc('data').collection('users').add(form);
                     showNotify('User disimpan', 'success');
                     setForm({ name: '', role: 'SISWA', barcodeId: '', extra: '' });
                     fetchUsers();
@@ -755,11 +699,8 @@
             const deleteUser = async (id, barcodeId) => {
                 if(!confirm('Hapus user?')) return;
                 try {
-                    if (settings.sheetUrl) {
-                        await callSheetAPI(settings.sheetUrl, 'deleteUser', { barcodeId });
-                    } else {
-                        await db.collection('artifacts').doc(appId).collection('public').doc('data').collection('users').doc(id).delete();
-                    }
+                    if (settings.sheetUrl) await callSheetAPI(settings.sheetUrl, 'deleteUser', { barcodeId });
+                    else await db.collection('artifacts').doc(appId).collection('public').doc('data').collection('users').doc(id).delete();
                     fetchUsers();
                     showNotify('Terhapus', 'success');
                 } catch(e) { showNotify('Gagal hapus', 'error'); }
@@ -770,68 +711,27 @@
                 setTimeout(() => { const canvas = document.getElementById('qr-canvas'); if (canvas) new QRious({ element: canvas, value: user.barcodeId, size: 200 }); }, 100);
             };
 
-            // Fungsi Cetak Kartu PDF
             const printCard = (userOrList) => {
                 const doc = new jspdf.jsPDF();
                 const list = Array.isArray(userOrList) ? userOrList : [userOrList];
-                
                 let x = 10, y = 10;
-                const cardWidth = 85; // Lebar Kartu (mm)
-                const cardHeight = 54; // Tinggi Kartu (mm)
-                const gap = 10;
+                const cardWidth = 85; const cardHeight = 54; const gap = 10;
 
                 list.forEach((u, index) => {
-                    // Cek Ganti Halaman
-                    if (y + cardHeight > 280) {
-                        doc.addPage();
-                        y = 10;
-                        x = 10;
-                    }
-
-                    // Border Kartu
-                    doc.setDrawColor(0);
-                    doc.setLineWidth(0.5);
-                    doc.rect(x, y, cardWidth, cardHeight);
-
-                    // Header Biru
-                    doc.setFillColor(59, 130, 246); // Blue Tailwind
-                    doc.rect(x, y, cardWidth, 12, 'F');
-
-                    // Nama Sekolah
-                    doc.setTextColor(255, 255, 255);
-                    doc.setFontSize(8);
-                    doc.setFont("helvetica", "bold");
+                    if (y + cardHeight > 280) { doc.addPage(); y = 10; x = 10; }
+                    doc.setDrawColor(0); doc.setLineWidth(0.5); doc.rect(x, y, cardWidth, cardHeight);
+                    doc.setFillColor(59, 130, 246); doc.rect(x, y, cardWidth, 12, 'F');
+                    doc.setTextColor(255, 255, 255); doc.setFontSize(8); doc.setFont("helvetica", "bold");
                     doc.text(settings.schoolName || 'KARTU ABSENSI', x + cardWidth/2, y + 8, { align: 'center' });
-
-                    // Nama Siswa
-                    doc.setTextColor(0, 0, 0);
-                    doc.setFontSize(11);
-                    doc.setFont("helvetica", "bold");
+                    doc.setTextColor(0, 0, 0); doc.setFontSize(11); doc.setFont("helvetica", "bold");
                     doc.text(u.name.toUpperCase(), x + cardWidth/2, y + 22, { align: 'center' });
-                    
-                    // Role & Info
-                    doc.setFontSize(9);
-                    doc.setFont("helvetica", "normal");
+                    doc.setFontSize(9); doc.setFont("helvetica", "normal");
                     doc.text(u.role + (u.extra ? ` - ${u.extra}` : ''), x + cardWidth/2, y + 27, { align: 'center' });
-
-                    // QR Code Image
                     const qr = new QRious({ value: u.barcodeId, size: 150 });
-                    const imgData = qr.toDataURL();
-                    doc.addImage(imgData, 'JPEG', x + (cardWidth - 22)/2, y + 30, 22, 22);
-
-                    // ID Text
-                    doc.setFontSize(7);
-                    doc.text(u.barcodeId, x + cardWidth/2, y + 53, { align: 'center' });
-
-                    // Logika Grid (2 Kolom)
-                    if (x === 10) {
-                        x += cardWidth + gap;
-                    } else {
-                        x = 10;
-                        y += cardHeight + gap;
-                    }
+                    doc.addImage(qr.toDataURL(), 'JPEG', x + (cardWidth - 22)/2, y + 30, 22, 22);
+                    doc.setFontSize(7); doc.text(u.barcodeId, x + cardWidth/2, y + 53, { align: 'center' });
+                    if (x === 10) x += cardWidth + gap; else { x = 10; y += cardHeight + gap; }
                 });
-
                 doc.save(Array.isArray(userOrList) ? 'Semua_Kartu_QR.pdf' : `Kartu_${userOrList.name}.pdf`);
             };
 
@@ -850,9 +750,7 @@
                     <div className="lg:col-span-2 bg-white border rounded-lg max-h-[500px] overflow-y-auto">
                         <div className="flex justify-between items-center p-4 border-b bg-gray-50 sticky top-0">
                              <div className="font-bold text-gray-700">Daftar User ({users.length})</div>
-                             <button onClick={() => printCard(users)} className="bg-purple-600 hover:bg-purple-700 text-white text-xs px-3 py-1.5 rounded flex items-center shadow-sm">
-                                <i className="fas fa-print mr-1"></i> Cetak Semua PDF
-                             </button>
+                             <button onClick={() => printCard(users)} className="bg-purple-600 hover:bg-purple-700 text-white text-xs px-3 py-1.5 rounded flex items-center shadow-sm"><i className="fas fa-print mr-1"></i> Cetak Semua PDF</button>
                         </div>
                         <table className="min-w-full divide-y divide-gray-200 text-sm">
                             <thead className="bg-gray-50"><tr><th className="px-4 py-2 text-left">Nama</th><th className="px-4 py-2">Role</th><th className="px-4 py-2">QR ID</th><th className="px-4 py-2">Aksi</th></tr></thead>
@@ -866,29 +764,16 @@
 
         function SettingsTab({ db, appId, currentSettings, showNotify }) {
             const [localSet, setLocalSet] = React.useState(currentSettings);
-            const [currentGPS, setCurrentGPS] = React.useState(null); // New state for live preview
+            const [currentGPS, setCurrentGPS] = React.useState(null); 
 
-            // Add effect to sync state when currentSettings prop updates
-            React.useEffect(() => {
-                setLocalSet(currentSettings);
-            }, [currentSettings]);
+            React.useEffect(() => { setLocalSet(currentSettings); }, [currentSettings]);
 
-            // Add effect to get current GPS for preview
             React.useEffect(() => {
                 if ("geolocation" in navigator) {
                     navigator.geolocation.getCurrentPosition(function(position) {
-                        setCurrentGPS({
-                            lat: position.coords.latitude,
-                            lng: position.coords.longitude,
-                            acc: position.coords.accuracy
-                        });
-                    }, (err) => {
-                        console.error("Settings GPS Error:", err);
-                        setCurrentGPS({ error: "Gagal mengambil lokasi: " + err.message });
-                    });
-                } else {
-                    setCurrentGPS({ error: "Geolocation tidak didukung browser ini." });
-                }
+                        setCurrentGPS({ lat: position.coords.latitude, lng: position.coords.longitude });
+                    }, (err) => { setCurrentGPS({ error: "Gagal mengambil lokasi: " + err.message }); });
+                } else { setCurrentGPS({ error: "Geolocation tidak didukung browser ini." }); }
             }, []);
 
             const save = async () => {
@@ -898,55 +783,17 @@
 
             const setCurrentLocation = () => {
                 navigator.geolocation.getCurrentPosition(pos => {
-                    setLocalSet({
-                        ...localSet,
-                        schoolLat: pos.coords.latitude,
-                        schoolLng: pos.coords.longitude
-                    });
-                    showNotify('Koordinat diambil dari lokasi saat ini', 'success');
-                }, (err) => {
-                    let msg = 'Gagal ambil lokasi';
-                    if(err.code === 1) msg = 'Izin Lokasi Ditolak';
-                    else if(err.code === 2) msg = 'Posisi Tidak Tersedia/Sinyal Lemah';
-                    else if(err.code === 3) msg = 'Timeout';
-                    showNotify(msg, 'error');
-                }, { timeout: 10000, enableHighAccuracy: true });
+                    setLocalSet({ ...localSet, schoolLat: pos.coords.latitude, schoolLng: pos.coords.longitude });
+                    showNotify('Lokasi berhasil diambil', 'success');
+                }, (err) => { showNotify('Gagal ambil lokasi', 'error'); }, { timeout: 10000, enableHighAccuracy: true });
             };
 
             return (
                 <div className="max-w-xl space-y-4">
                     <h3 className="text-xl font-bold">Pengaturan</h3>
-                    <div><label className="text-sm font-bold block mb-1">URL Google Apps Script (Wajib untuk Spreadsheet Database)</label><input type="text" className="w-full border border-blue-300 bg-blue-50 rounded p-2 text-sm font-mono" placeholder="https://script.google.com/macros/s/..../exec" value={localSet.sheetUrl} onChange={e => setLocalSet({...localSet, sheetUrl: e.target.value})} /><p className="text-xs text-gray-500 mt-1">Kosongkan jika ingin menggunakan database lokal browser.</p></div>
+                    <div><label className="text-sm font-bold block mb-1">URL Google Apps Script</label><input type="text" className="w-full border border-blue-300 bg-blue-50 rounded p-2 text-sm font-mono" value={localSet.sheetUrl} onChange={e => setLocalSet({...localSet, sheetUrl: e.target.value})} /></div>
                     <div><label className="text-sm font-bold block">Nama Sekolah</label><input type="text" className="w-full border rounded p-2" value={localSet.schoolName} onChange={e => setLocalSet({...localSet, schoolName: e.target.value})} /></div>
-                    
-                     {/* Location Section Enhanced */}
-                     <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
-                        <h4 className="font-bold text-blue-800 mb-2">Titik Koordinat Sekolah</h4>
-                        <p className="text-xs text-blue-600 mb-4">
-                            Untuk mengisi otomatis, berdirilah di lokasi sekolah lalu klik tombol di bawah ini.
-                        </p>
-                        
-                        {/* Live GPS Info */}
-                        <div className="mb-4 text-xs text-gray-500 flex justify-between bg-white p-2 rounded">
-                            <span>
-                                GPS Perangkat Anda: 
-                                {currentGPS?.error ? <span className="text-red-500 ml-1">{currentGPS.error}</span> : 
-                                 currentGPS ? `${currentGPS.lat.toFixed(6)}, ${currentGPS.lng.toFixed(6)}` : 'Mencari...'}
-                            </span>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-4 mb-2">
-                             <div><label className="text-sm block">Latitude</label><input type="number" className="w-full border rounded p-2" value={localSet.schoolLat} onChange={e => setLocalSet({...localSet, schoolLat: parseFloat(e.target.value)})} /></div><div><label className="text-sm block">Longitude</label><input type="number" className="w-full border rounded p-2" value={localSet.schoolLng} onChange={e => setLocalSet({...localSet, schoolLng: parseFloat(e.target.value)})} /></div>
-                        </div>
-
-                        <button 
-                            onClick={setCurrentLocation}
-                            className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded flex items-center justify-center gap-2 transition"
-                        >
-                            <i className="fas fa-map-marker-alt"></i> Ambil Lokasi Saya Saat Ini
-                        </button>
-                    </div>
-
+                     <div className="bg-blue-50 p-4 rounded-lg border border-blue-200"><h4 className="font-bold text-blue-800 mb-2">Titik Koordinat Sekolah</h4><div className="mb-4 text-xs text-gray-500 flex justify-between bg-white p-2 rounded"><span>GPS Perangkat: {currentGPS?.error ? <span className="text-red-500 ml-1">{currentGPS.error}</span> : currentGPS ? `${currentGPS.lat.toFixed(6)}, ${currentGPS.lng.toFixed(6)}` : 'Mencari...'}</span></div><div className="grid grid-cols-2 gap-4 mb-2"><div><label className="text-sm block">Latitude</label><input type="number" className="w-full border rounded p-2" value={localSet.schoolLat} onChange={e => setLocalSet({...localSet, schoolLat: parseFloat(e.target.value)})} /></div><div><label className="text-sm block">Longitude</label><input type="number" className="w-full border rounded p-2" value={localSet.schoolLng} onChange={e => setLocalSet({...localSet, schoolLng: parseFloat(e.target.value)})} /></div></div><button onClick={setCurrentLocation} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded flex items-center justify-center gap-2 transition"><i className="fas fa-map-marker-alt"></i> Ambil Lokasi Saya Saat Ini</button></div>
                     <div><label className="text-sm block">Radius (m)</label><input type="number" className="w-full border rounded p-2" value={localSet.radius} onChange={e => setLocalSet({...localSet, radius: parseInt(e.target.value)})} /></div>
                     <button onClick={save} className="bg-blue-600 text-white px-6 py-2 rounded font-bold">Simpan</button>
                 </div>
