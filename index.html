@@ -60,16 +60,18 @@
 
     <script type="text/babel">
         // --- KONFIGURASI FIREBASE ---
-        // PENTING UNTUK GITHUB:
-        // Jika window.__firebase_config tidak ada (karena di GitHub), gunakan object manual di bawah.
-        // Silakan ganti nilai 'PASTE_...' dengan data dari Firebase Console Anda.
-        const firebaseConfig = (typeof window !== 'undefined' && window.__firebase_config) ? JSON.parse(window.__firebase_config) : {
-            apiKey: "PASTE_API_KEY_DISINI",
-            authDomain: "PASTE_PROJECT_ID.firebaseapp.com",
-            projectId: "PASTE_PROJECT_ID",
-            storageBucket: "PASTE_PROJECT_ID.appspot.com",
-            messagingSenderId: "PASTE_SENDER_ID",
-            appId: "PASTE_APP_ID"
+        
+        // Cek apakah kita sedang di environment Canvas (Preview) atau GitHub (Production)
+        const isCanvasEnv = typeof window !== 'undefined' && window.__firebase_config;
+        
+        // Jika di Canvas, gunakan config internal. Jika tidak, gunakan config Proyek Anda.
+        const firebaseConfig = isCanvasEnv ? JSON.parse(window.__firebase_config) : {
+            apiKey: "AIzaSyBeyEIXS6V9-8M4GzF65aK05ba_YZUnaQA",
+            authDomain: "absensi-sdn-margantoko-2.firebaseapp.com",
+            projectId: "absensi-sdn-margantoko-2",
+            storageBucket: "absensi-sdn-margantoko-2.firebasestorage.app",
+            messagingSenderId: "560096900818",
+            appId: "1:560096900818:web:923013981b44d4b6cadf0b"
         };
 
         const appId = (typeof window !== 'undefined' && window.__app_id) ? window.__app_id : 'margantoko-2-prod';
@@ -79,7 +81,6 @@
                 firebase.initializeApp(firebaseConfig);
             } catch (e) {
                 console.error("Firebase init error. Pastikan config sudah diisi!", e);
-                document.body.innerHTML = '<div style="padding:20px; text-align:center; color:red;"><h1>Error Konfigurasi</h1><p>Gagal menginisialisasi Firebase. Pastikan Anda telah mengedit file index.html dan memasukkan API Key Firebase Anda.</p></div>';
             }
         }
         const auth = firebase.auth();
@@ -135,15 +136,15 @@
             React.useEffect(() => {
                 const initAuth = async () => {
                     try {
-                        // Di GitHub, __initial_auth_token tidak akan ada, jadi akan langsung ke else (signInAnonymously)
-                        if (typeof window !== 'undefined' && window.__initial_auth_token) {
+                        // Logika Login: Gunakan Token HANYA jika di Canvas Environment
+                        if (isCanvasEnv && window.__initial_auth_token) {
                             await auth.signInWithCustomToken(window.__initial_auth_token);
                         } else {
+                            // Di GitHub atau Localhost, gunakan Anonymous
                             await auth.signInAnonymously();
                         }
                     } catch (error) { 
                         console.error("Auth Error:", error);
-                        // showNotify("Gagal Login Firebase. Cek Console.", "error"); // Cannot use showNotify here yet
                     }
                 };
                 initAuth();
